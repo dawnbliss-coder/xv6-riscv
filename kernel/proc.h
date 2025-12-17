@@ -18,6 +18,10 @@ struct context {
   uint64 s11;
 };
 
+#define TARGET_LATENCY 48
+#define MIN_TIMESLICE 3
+
+
 // Per-CPU state.
 struct cpu {
   struct proc *proc;          // The process running on this cpu, or null.
@@ -104,4 +108,24 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  // inside struct proc { ... }
+  uint64 ctime;        // creation time (ticks)
+  #ifdef CFS
+    int nice;              // for priority
+    int weight;            // computed from nice
+    uint64 vruntime;       // virtual runtime
+    uint64 last_sched_time; // ← Change from uint to uint64
+    int timeslice;         // remaining timeslice
+  #endif
+
+  uint64 start_time;     // when process became RUNNABLE
+  uint64 total_wait_time; // total time spent waiting
+  uint64 total_run_time;  // total time spent running
+  uint64 last_run_start; // when current run started
 };
+
+#ifdef CFS
+int count_runnable_procs(void);
+#endif
+
+

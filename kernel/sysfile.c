@@ -16,6 +16,9 @@
 #include "file.h"
 #include "fcntl.h"
 
+// global counter for bytes read
+uint64 total_bytes_read = 0;
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -65,19 +68,33 @@ sys_dup(void)
   return fd;
 }
 
+extern uint64 total_bytes_read;   // declare global counter
+
 uint64
 sys_read(void)
 {
   struct file *f;
   int n;
   uint64 p;
+  int r;
 
+  // extract args
   argaddr(1, &p);
   argint(2, &n);
   if(argfd(0, 0, &f) < 0)
     return -1;
-  return fileread(f, p, n);
+
+  // perform actual read
+  r = fileread(f, p, n);
+
+  // update counter if read succeeded
+  if(r > 0) {
+    total_bytes_read = (total_bytes_read + r) & 0xFFFFFFFFFFFFFFFFULL; // wrap around
+  }
+
+  return r;
 }
+
 
 uint64
 sys_write(void)

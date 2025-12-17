@@ -81,8 +81,21 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
+  if(which_dev == 2) { // timer interrupt
+    #ifdef CFS
+        struct proc *p = myproc();
+        if(p && p->state == RUNNING){
+          // Always increment vruntime, even if just a small amount
+          p->vruntime += 1024 / (p->weight > 0 ? p->weight : 1024);
+          p->timeslice--;
+          if(p->timeslice <= 0)
+              yield();
+      }
+    #else
+        yield(); // normal preemption for RR/FCFS
+    #endif
+  }
+    
 
   prepare_return();
 
@@ -164,6 +177,8 @@ kerneltrap()
 void
 clockintr()
 {
+  // currently running process on this CPU
+
   if(cpuid() == 0){
     acquire(&tickslock);
     ticks++;
@@ -171,11 +186,28 @@ clockintr()
     release(&tickslock);
   }
 
+// #ifdef CFS
+//   // Update CFS vruntime and timeslice
+//   struct proc *p = myproc(); 
+//   if(p){
+//     // Increment virtual runtime normalized by weight
+//     p->vruntime += 1024 / p->weight;
+
+//     // Decrement the process's remaining time slice
+//     p->timeslice--;
+
+//     // Preempt if time slice is over
+//     if(p->timeslice <= 0){
+//       yield();  // switch to scheduler
+//     }
+//   }
+// #endif
+
   // ask for the next timer interrupt. this also clears
-  // the interrupt request. 1000000 is about a tenth
-  // of a second.
+  // the interrupt request. 1000000 is about a tenth of a second.
   w_stimecmp(r_time() + 1000000);
 }
+
 
 // check if it's an external interrupt or software interrupt,
 // and handle it.

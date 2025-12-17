@@ -12,6 +12,8 @@ struct proc proc[NPROC];
 
 struct proc *initproc;
 
+#define max(a,b) ((a) > (b) ? (a) : (b))
+
 int nextpid = 1;
 struct spinlock pid_lock;
 
@@ -25,6 +27,23 @@ extern char trampoline[]; // trampoline.S
 // memory model when using p->parent.
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
+
+#ifdef CFS
+// approximate 1.25^nice using integer math
+int calc_weight(int nice) {
+    int weight = 1024; // default nice=0
+    int i;
+
+    if(nice > 0){
+        for(i = 0; i < nice; i++)
+            weight = weight * 1024 / 1280;  // 1024/1280 ≈ 1/1.25
+    } else if(nice < 0){
+        for(i = 0; i < -nice; i++)
+            weight = weight * 1280 / 1024;  // 1.25 factor
+    }
+    return weight;
+}
+#endif
 
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
@@ -42,6 +61,22 @@ proc_mapstacks(pagetable_t kpgtbl)
     kvmmap(kpgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
   }
 }
+
+#ifdef CFS
+int
+count_runnable_procs(void)
+{
+    int cnt = 0;
+    struct proc *p;
+    for(p = proc; p < &proc[NPROC]; p++){
+        acquire(&p->lock);
+        if(p->state == RUNNABLE)
+            cnt++;
+        release(&p->lock);
+    }
+    return cnt;
+}
+#endif
 
 // initialize the proc table.
 void
@@ -145,6 +180,16 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+
+  p->ctime = ticks;
+  #ifdef CFS
+    p->nice = 0;                  // default nice value
+    p->weight = 1024;             // default weight
+    p->vruntime = 0;
+    p->last_sched_time = ticks;   // start counting from current ticks
+    p->timeslice = 0;
+  #endif
+
 
   return p;
 }
@@ -424,43 +469,125 @@ kwait(uint64 addr)
 void
 scheduler(void)
 {
-  struct proc *p;
-  struct cpu *c = mycpu();
+    struct proc *p;
+    struct cpu *c = mycpu();
+    c->proc = 0;
 
-  c->proc = 0;
-  for(;;){
-    // The most recent process to run may have had interrupts
-    // turned off; enable them to avoid a deadlock if all
-    // processes are waiting. Then turn them back off
-    // to avoid a possible race between an interrupt
-    // and wfi.
-    intr_on();
-    intr_off();
+    for(;;){
+        intr_on();
 
-    int found = 0;
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
+#ifdef FCFS
+        struct proc *earliest = 0;
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
+        // Find RUNNABLE process with the smallest creation time
+        for(p = proc; p < &proc[NPROC]; p++){
+            acquire(&p->lock);
+            if(p->state == RUNNABLE){
+                if(!earliest || p->ctime < earliest->ctime){
+                    if(earliest)
+                        release(&earliest->lock);
+                    earliest = p;
+                } else {
+                    release(&p->lock);
+                }
+            } else {
+                release(&p->lock);
+            }
+        }
+
+        if(earliest){
+            earliest->state = RUNNING;
+            c->proc = earliest;
+            swtch(&c->context, &earliest->context);
+            c->proc = 0;
+            release(&earliest->lock);
+        }
+  #endif
+#ifdef CFS
+    // Find RUNNABLE process with smallest vruntime
+    struct proc *next = 0;
+    int num_runnable = 0;
+    uint64 min_vruntime = -1; // -1 is max value for unsigned type
+
+    // First pass: count runnable processes and find minimum vruntime
+    for(p = proc; p < &proc[NPROC]; p++){
+        acquire(&p->lock);
+        if(p->state == RUNNABLE){
+            num_runnable++;
+            if(p->vruntime < min_vruntime){
+                min_vruntime = p->vruntime;
+            }
+        }
+        release(&p->lock);
+    }
+
+    // If we have runnable processes, show logging
+    if(num_runnable > 0) {
+        printf("[Scheduler Tick]\n");
+        
+        // Log all runnable processes
+        for(p = proc; p < &proc[NPROC]; p++){
+            acquire(&p->lock);
+            if(p->state == RUNNABLE){
+                printf("PID: %d | vRuntime: %lu\n", p->pid, p->vruntime);
+            }
+            release(&p->lock);
+        }
+    }
+
+    // Second pass: find the actual process to schedule (with lock held)
+    for(p = proc; p < &proc[NPROC]; p++){
+        acquire(&p->lock);
+        if(p->state == RUNNABLE && p->vruntime == min_vruntime){
+            next = p;
+            break; // Keep the lock held
+        }
+        release(&p->lock);
+    }
+
+    if(next){
+        // Calculate timeslice
+        int timeslice = num_runnable ? max(TARGET_LATENCY / num_runnable, MIN_TIMESLICE) : MIN_TIMESLICE;
+        next->timeslice = timeslice;
+
+        // Log which process was selected
+        printf("--> Scheduling PID %d (lowest vRuntime)\n\n", next->pid);
+
+        acquire(&tickslock);
+        next->last_run_start = ticks;
+        // Update waiting time
+        if(next->start_time > 0) {
+            next->total_wait_time += (ticks - next->start_time);
+        }
+        release(&tickslock);
+        // Run the process
+        next->state = RUNNING;
+        c->proc = next;
+        swtch(&c->context, &next->context);
         c->proc = 0;
-        found = 1;
-      }
-      release(&p->lock);
+        release(&next->lock);
     }
-    if(found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
-      asm volatile("wfi");
+#endif
+#ifndef CFS 
+#ifndef FCFS
+        // Default Round Robin
+        for(p = proc; p < &proc[NPROC]; p++){
+            acquire(&p->lock);
+            if(p->state == RUNNABLE){
+                p->state = RUNNING;
+                c->proc = p;
+                swtch(&c->context, &p->context);
+                c->proc = 0;
+            }
+            release(&p->lock);
+        }
+#endif
+#endif
     }
-  }
 }
+
+
+
 
 // Switch to scheduler.  Must hold only p->lock
 // and have changed proc->state. Saves and restores
@@ -490,11 +617,28 @@ sched(void)
 }
 
 // Give up the CPU for one scheduling round.
-void
-yield(void)
-{
+void yield(void) {
   struct proc *p = myproc();
   acquire(&p->lock);
+  
+  #ifdef CFS
+      // Update vruntime before yielding
+      acquire(&tickslock);
+      uint64 now = ticks;
+      release(&tickslock);
+
+      p->vruntime += (now - p->last_sched_time) * 1024 / p->weight;
+      p->last_sched_time = now;
+
+      if(p->last_run_start > 0) {
+          p->total_run_time += (now - p->last_run_start);
+          p->last_run_start = 0;  // Reset
+      }
+      // Set start of waiting time
+      p->start_time = now;
+
+  #endif
+
   p->state = RUNNABLE;
   sched();
   release(&p->lock);

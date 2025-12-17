@@ -107,3 +107,11 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+extern uint64 total_bytes_read;
+
+uint64
+sys_getreadcount(void)
+{
+  return total_bytes_read;
+}

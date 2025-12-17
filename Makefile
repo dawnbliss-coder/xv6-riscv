@@ -1,6 +1,10 @@
 K=kernel
 U=user
 
+make clean; make qemu SCHEDULER=FCFS
+make clean; make qemu SCHEDULER=CFS
+
+# at top, after variables are defined
 OBJS = \
   $K/entry.o \
   $K/start.o \
@@ -82,6 +86,20 @@ ifneq ($(shell $(CC) -dumpspecs 2>/dev/null | grep -e '[^f]nopie'),)
 CFLAGS += -fno-pie -nopie
 endif
 
+ifdef SCHEDULER
+  ifeq ($(SCHEDULER),FCFS)
+    CFLAGS += -DFCFS
+  endif
+  ifeq ($(SCHEDULER),CFS)
+    CFLAGS += -DCFS
+  endif
+endif
+
+ifeq ($(SCHEDULER),CFS)
+  CFLAGS += -DCFS
+endif
+
+
 LDFLAGS = -z max-page-size=4096
 
 $K/kernel: $(OBJS) $K/kernel.ld
@@ -143,6 +161,10 @@ UPROGS=\
 	$U/_logstress\
 	$U/_forphan\
 	$U/_dorphan\
+	$U/_readcount\
+	$U/_fcfstest\
+	$U/_cfstest\
+	$U/_schedulertest\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
@@ -191,3 +213,5 @@ check-qemu-version:
 		echo "ERROR: Need qemu version >= $(MIN_QEMU_VERSION)"; \
 		exit 1; \
 	fi
+
+

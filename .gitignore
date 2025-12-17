@@ -16,3 +16,12 @@ kernel/kernel
 user/usys.S
 .gdbinit
 TAGS
+*~
+*.swp
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+# Logs and test files
+*.log
