@@ -11,7 +11,7 @@ xv6 is a re-implementation of Dennis Ritchie's and Ken Thompson's Unix Version 6
 - **CFS (Completely Fair Scheduler)** with priority support and dynamic timeslicing
 - Comprehensive testing framework comparing scheduler behaviors
 
-## 🎯 Key Features
+## Key Features
 
 - **System Call Implementation** - Added kernel-level read tracking with 64-bit overflow handling
 - **FCFS Scheduler** - Non-preemptive scheduling based on process creation time
